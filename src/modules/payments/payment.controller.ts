@@ -124,7 +124,7 @@ export const createCheckoutSession = async (
 
       success_url: `${process.env.CLIENT_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
 
-      cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
+      cancel_url: `${process.env.CLIENT_URL}/dashboard/bookings`,
     });
 
     // Attach the Stripe session to the booking.
