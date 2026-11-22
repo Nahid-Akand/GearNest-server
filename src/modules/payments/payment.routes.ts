@@ -1,8 +1,9 @@
-
 import { Router } from "express";
+
 import {
   createCheckoutSession,
   handleStripeWebhook,
+  getCheckoutSessionStatus,
 } from "./payment.controller.js";
 
 import { verifyToken } from "../../middlewares/auth.middleware.js";
@@ -16,6 +17,14 @@ router.post(
   verifyToken,
   authorizeRoles("customer"),
   createCheckoutSession
+);
+
+// Check the status of a specific Checkout Session
+router.get(
+  "/status/:sessionId",
+  verifyToken,
+  authorizeRoles("customer"),
+  getCheckoutSessionStatus
 );
 
 // Stripe sends payment notifications here

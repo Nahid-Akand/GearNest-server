@@ -21,6 +21,14 @@ export const connectDatabase = async (): Promise<Db> => {
 
     await database.command({ ping: 1 });
 
+    // Create unique index for Stripe payment sessions
+    await database.collection("payments").createIndex(
+      { stripeSessionId: 1 },
+      { unique: true }
+    );
+
+    console.log("Payment collection unique index created.");
+
     console.log(`MongoDB connected successfully: ${dbName}`);
 
     return database;
