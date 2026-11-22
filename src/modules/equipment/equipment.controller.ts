@@ -205,6 +205,7 @@ export const createEquipment = async (
   }
 };
 
+
 // ============================================
 // GET ALL APPROVED EQUIPMENT
 // ============================================
@@ -221,17 +222,20 @@ export const getAllApprovedEquipment = async (
       category,
       location,
       condition,
+      rentalType,
+      availability,
       minPrice,
       maxPrice,
       sort,
       limit,
     } = req.query;
 
+    // Only approved equipment will be displayed
     const filter: Record<string, unknown> = {
       status: "approved",
-      isAvailable: true,
     };
 
+    // Search by name, description, brand, and location
     if (typeof search === "string" && search.trim()) {
       const escapedSearch = search.trim().replace(
         /[.*+?^${}()|[\]\\]/g,
@@ -242,34 +246,61 @@ export const getAllApprovedEquipment = async (
         { name: { $regex: escapedSearch, $options: "i" } },
         { description: { $regex: escapedSearch, $options: "i" } },
         { brand: { $regex: escapedSearch, $options: "i" } },
+        { location: { $regex: escapedSearch, $options: "i" } },
       ];
     }
 
+    // Filter by category
     if (typeof category === "string" && category !== "all") {
       filter.category = category;
     }
 
+    // Filter by location
     if (typeof location === "string" && location.trim()) {
+      const escapedLocation = location.trim().replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+
       filter.location = {
-        $regex: location.trim().replace(
-          /[.*+?^${}()|[\]\\]/g,
-          "\\$&"
-        ),
+        $regex: escapedLocation,
         $options: "i",
       };
     }
 
+    // Filter by condition
     if (typeof condition === "string" && condition !== "all") {
       filter.condition = condition;
     }
 
+    // Filter by rental type
+    if (typeof rentalType === "string" && rentalType !== "all") {
+      filter.rentalTypes = rentalType;
+    }
+
+    // Filter by availability
+    if (availability === "available") {
+      filter.isAvailable = true;
+    } else if (availability === "unavailable") {
+      filter.isAvailable = false;
+    }
+
+    // Filter by price range
     const priceFilter: Record<string, number> = {};
 
-    if (minPrice !== undefined && Number.isFinite(Number(minPrice))) {
+    if (
+      minPrice !== undefined &&
+      minPrice !== "" &&
+      Number.isFinite(Number(minPrice))
+    ) {
       priceFilter.$gte = Number(minPrice);
     }
 
-    if (maxPrice !== undefined && Number.isFinite(Number(maxPrice))) {
+    if (
+      maxPrice !== undefined &&
+      maxPrice !== "" &&
+      Number.isFinite(Number(maxPrice))
+    ) {
       priceFilter.$lte = Number(maxPrice);
     }
 
@@ -277,6 +308,7 @@ export const getAllApprovedEquipment = async (
       filter.pricePerDay = priceFilter;
     }
 
+    // Sorting
     let sortOption: Record<string, 1 | -1> = {
       createdAt: -1,
     };
@@ -289,7 +321,9 @@ export const getAllApprovedEquipment = async (
       sortOption = { createdAt: 1 };
     }
 
+    // Limit results
     const parsedLimit = Number(limit);
+
     const equipmentLimit =
       Number.isInteger(parsedLimit) && parsedLimit > 0
         ? Math.min(parsedLimit, 100)
@@ -321,6 +355,7 @@ export const getAllApprovedEquipment = async (
     });
   }
 };
+
 
 // ============================================
 // GET PENDING EQUIPMENT (ADMIN)
