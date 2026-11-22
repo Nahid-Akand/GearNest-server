@@ -7,7 +7,10 @@ import { CreateBookingInput, IBooking } from "./booking.types.js";
 
 const DAY_IN_MS = 1000 * 60 * 60 * 24;
 
+// ============================================
 // CREATE BOOKING - CUSTOMER
+// ============================================
+
 export const createBooking = async (
   req: AuthRequest,
   res: Response
@@ -22,21 +25,59 @@ export const createBooking = async (
       });
     }
 
-    const { equipmentId, startDate, endDate } =
-      req.body as CreateBookingInput;
+    const {
+      equipmentId,
+      startDate,
+      endDate,
+      quantity,
+      contactNumber,
+      deliveryAddress,
+      additionalNotes,
+    } = req.body as CreateBookingInput;
 
+    // Validate required fields
     if (
       !equipmentId ||
       !startDate ||
       !endDate ||
-      !ObjectId.isValid(equipmentId)
+      !ObjectId.isValid(equipmentId) ||
+      !Number.isInteger(Number(quantity)) ||
+      Number(quantity) < 1 ||
+      !contactNumber?.trim() ||
+      !deliveryAddress?.trim()
     ) {
       return res.status(400).json({
         success: false,
-        message: "Please provide valid booking information.",
+        message: "Please provide all required booking information.",
       });
     }
 
+    const requestedQuantity = Number(quantity);
+    const cleanContactNumber = contactNumber.trim();
+    const cleanDeliveryAddress = deliveryAddress.trim();
+    const cleanAdditionalNotes = additionalNotes?.trim() || "";
+
+    if (
+      cleanContactNumber.length > 20 ||
+      !/^[+()\-\s\d]{7,20}$/.test(cleanContactNumber)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide a valid contact number.",
+      });
+    }
+
+    if (
+      cleanDeliveryAddress.length > 500 ||
+      cleanAdditionalNotes.length > 1000
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Address or additional notes are too long.",
+      });
+    }
+
+    // Validate rental dates
     const start = new Date(startDate);
     const end = new Date(endDate);
 
@@ -57,6 +98,7 @@ export const createBooking = async (
 
     const db = getDatabase();
 
+    // Find approved equipment
     const equipment = await db.collection("equipment").findOne({
       _id: new ObjectId(equipmentId),
       status: "approved",
@@ -69,6 +111,7 @@ export const createBooking = async (
       });
     }
 
+    // Prevent owners from booking their own equipment
     if (equipment.ownerId.toString() === customerId) {
       return res.status(400).json({
         success: false,
@@ -76,39 +119,91 @@ export const createBooking = async (
       });
     }
 
-    const conflictingBooking = await db.collection("bookings").findOne({
-      equipmentId: new ObjectId(equipmentId),
-      status: { $in: ["pending", "confirmed"] },
-      startDate: { $lt: end },
-      endDate: { $gt: start },
-    });
+    // Check equipment availability
+    const availableQuantity = Number(
+      equipment.availableQuantity ?? 1
+    );
 
-    if (conflictingBooking) {
+    if (
+      equipment.isAvailable === false ||
+      !Number.isFinite(availableQuantity) ||
+      availableQuantity < 1
+    ) {
       return res.status(409).json({
         success: false,
-        message: "This equipment is already booked for those dates.",
+        message: "This equipment is currently unavailable.",
       });
     }
 
-    const pricePerDay = Number(equipment.pricePerDay);
-    const totalPrice = pricePerDay * totalDays;
+    // Find bookings that overlap with the requested dates
+    const overlappingBookings = await db
+      .collection("bookings")
+      .find({
+        equipmentId: new ObjectId(equipmentId),
+        status: { $in: ["pending", "confirmed"] },
+        startDate: { $lt: end },
+        endDate: { $gt: start },
+      })
+      .project({ quantity: 1 })
+      .toArray();
 
+    // Old bookings without quantity count as one unit
+    const alreadyBookedQuantity = overlappingBookings.reduce(
+      (total, booking) => total + Number(booking.quantity ?? 1),
+      0
+    );
+
+    const remainingQuantity =
+      availableQuantity - alreadyBookedQuantity;
+
+    if (requestedQuantity > remainingQuantity) {
+      return res.status(409).json({
+        success: false,
+        message: `Only ${Math.max(remainingQuantity, 0)} unit(s) are available for those dates.`,
+      });
+    }
+
+    // Calculate total price on the server
+    const pricePerDay = Number(equipment.pricePerDay);
+
+    if (!Number.isFinite(pricePerDay) || pricePerDay <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Equipment rental price is invalid.",
+      });
+    }
+
+    const totalPrice =
+      pricePerDay * totalDays * requestedQuantity;
+
+    // Create booking
     const booking: IBooking = {
       customerId: new ObjectId(customerId),
       ownerId: new ObjectId(equipment.ownerId),
       equipmentId: new ObjectId(equipmentId),
+
       startDate: start,
       endDate: end,
+
       totalDays,
       pricePerDay,
+      quantity: requestedQuantity,
       totalPrice,
+
+      contactNumber: cleanContactNumber,
+      deliveryAddress: cleanDeliveryAddress,
+      additionalNotes: cleanAdditionalNotes,
+
       status: "pending",
       paymentStatus: "unpaid",
+
       createdAt: new Date(),
       updatedAt: new Date(),
     };
 
-    const result = await db.collection<IBooking>("bookings").insertOne(booking);
+    const result = await db
+      .collection<IBooking>("bookings")
+      .insertOne(booking);
 
     return res.status(201).json({
       success: true,
@@ -128,7 +223,10 @@ export const createBooking = async (
   }
 };
 
+// ============================================
 // GET MY BOOKINGS - CUSTOMER
+// ============================================
+
 export const getMyBookings = async (
   req: AuthRequest,
   res: Response
@@ -190,7 +288,10 @@ export const getMyBookings = async (
   }
 };
 
+// ============================================
 // GET OWNER BOOKINGS - OWNER
+// ============================================
+
 export const getOwnerBookings = async (
   req: AuthRequest,
   res: Response
