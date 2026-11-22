@@ -10,7 +10,7 @@ import { AuthRequest } from "../../middlewares/auth.middleware.js";
 // STRIPE CONFIGURATION
 // ============================================
 
-const getStripe = () => {
+const getStripe = (): Stripe => {
   const secretKey = process.env.STRIPE_SECRET_KEY;
 
   if (!secretKey) {
@@ -52,7 +52,6 @@ export const createCheckoutSession = async (
 
     const db = getDatabase();
 
-    // Find customer's pending and unpaid booking
     const booking = await db.collection("bookings").findOne({
       _id: new ObjectId(bookingId),
       customerId: new ObjectId(customerId),
@@ -67,7 +66,14 @@ export const createCheckoutSession = async (
       });
     }
 
-    // Get equipment details
+    // Prevent another checkout session for this booking.
+    if (booking.stripeSessionId) {
+      return res.status(409).json({
+        success: false,
+        message: "A checkout session already exists for this booking.",
+      });
+    }
+
     const equipment = await db.collection("equipment").findOne({
       _id: booking.equipmentId,
     });
@@ -79,7 +85,6 @@ export const createCheckoutSession = async (
       });
     }
 
-    // Validate booking amount
     const amount = Number(booking.totalPrice);
 
     if (!Number.isFinite(amount) || amount <= 0) {
@@ -89,7 +94,6 @@ export const createCheckoutSession = async (
       });
     }
 
-    // Create Stripe Checkout Session
     const stripe = getStripe();
 
     const session = await stripe.checkout.sessions.create({
@@ -99,13 +103,16 @@ export const createCheckoutSession = async (
         {
           price_data: {
             currency: "bdt",
+
             product_data: {
               name: equipment.name,
               description: `Equipment rental for ${booking.totalDays} day(s), quantity: ${booking.quantity ?? 1}`,
             },
-            // BDT amount converted to poisha
+
+            // BDT amount converted to poisha.
             unit_amount: Math.round(amount * 100),
           },
+
           quantity: 1,
         },
       ],
@@ -120,11 +127,14 @@ export const createCheckoutSession = async (
       cancel_url: `${process.env.CLIENT_URL}/payment/cancel`,
     });
 
-    // Save Checkout Session ID to the booking
-    await db.collection("bookings").updateOne(
+    // Attach the Stripe session to the booking.
+    const updateResult = await db.collection("bookings").updateOne(
       {
         _id: booking._id,
         customerId: new ObjectId(customerId),
+        paymentStatus: "unpaid",
+        status: "pending",
+        stripeSessionId: { $exists: false },
       },
       {
         $set: {
@@ -133,6 +143,15 @@ export const createCheckoutSession = async (
         },
       }
     );
+
+    if (updateResult.modifiedCount !== 1) {
+      await stripe.checkout.sessions.expire(session.id);
+
+      return res.status(409).json({
+        success: false,
+        message: "Could not attach the checkout session to this booking. Please try again.",
+      });
+    }
 
     return res.status(200).json({
       success: true,
@@ -160,7 +179,14 @@ export const getCheckoutSessionStatus = async (
 ) => {
   try {
     const customerId = req.user?.userId;
-    const { sessionId } = req.params;
+    const sessionId = req.params.sessionId;
+
+if (typeof sessionId !== "string" || !sessionId.startsWith("cs_")) {
+  return res.status(400).json({
+    success: false,
+    message: "Invalid Checkout Session ID.",
+  });
+}
 
     if (!customerId || !ObjectId.isValid(customerId)) {
       return res.status(401).json({
@@ -178,7 +204,7 @@ export const getCheckoutSessionStatus = async (
 
     const stripe = getStripe();
 
-    // Retrieve the actual session from Stripe
+    // Retrieve the actual session from Stripe.
     const session = await stripe.checkout.sessions.retrieve(sessionId);
 
     const bookingId = session.metadata?.bookingId;
@@ -198,7 +224,6 @@ export const getCheckoutSessionStatus = async (
 
     const db = getDatabase();
 
-    // Verify that this booking belongs to the logged-in customer
     const booking = await db.collection("bookings").findOne({
       _id: new ObjectId(bookingId),
       customerId: new ObjectId(customerId),
@@ -224,7 +249,10 @@ export const getCheckoutSessionStatus = async (
       stripePaymentStatus: session.payment_status,
       paymentStatus: booking.paymentStatus,
       bookingStatus: booking.status,
-      paymentConfirmed: booking.paymentStatus === "paid",
+      paymentConfirmed:
+        session.payment_status === "paid" &&
+        booking.paymentStatus === "paid" &&
+        booking.status === "confirmed",
       payment,
       bookingId: booking._id,
     });
@@ -257,6 +285,7 @@ export const handleStripeWebhook = async (
 
   let event: Stripe.Event;
 
+  // Verify Stripe webhook signature.
   try {
     const stripe = getStripe();
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -265,7 +294,6 @@ export const handleStripeWebhook = async (
       throw new Error("STRIPE_WEBHOOK_SECRET is not configured.");
     }
 
-    // Verify Stripe webhook signature
     event = stripe.webhooks.constructEvent(
       req.body,
       signature,
@@ -278,7 +306,7 @@ export const handleStripeWebhook = async (
   }
 
   try {
-    // Handle successful Checkout payment
+    // Handle completed Checkout Session.
     if (event.type === "checkout.session.completed") {
       const session = event.data.object as Stripe.Checkout.Session;
 
@@ -303,7 +331,7 @@ export const handleStripeWebhook = async (
 
       const db = getDatabase();
 
-      // Find the associated booking
+      // Find the associated booking.
       const booking = await db.collection("bookings").findOne({
         _id: new ObjectId(bookingId),
         customerId: new ObjectId(customerId),
@@ -314,7 +342,17 @@ export const handleStripeWebhook = async (
         return res.status(404).send("Associated booking not found.");
       }
 
-      // Verify payment amount and currency
+      // Prevent payment confirmation for cancelled bookings.
+      if (
+        booking.status === "cancelled" ||
+        !["pending", "confirmed"].includes(booking.status)
+      ) {
+        return res.status(400).send(
+          "Booking is not eligible for payment."
+        );
+      }
+
+      // Verify payment amount and currency.
       const expectedAmount = Math.round(
         Number(booking.totalPrice) * 100
       );
@@ -327,12 +365,14 @@ export const handleStripeWebhook = async (
         return res.status(400).send("Payment amount mismatch.");
       }
 
-      // Update booking if it has not already been paid
+      // Confirm booking after successful payment.
       await db.collection("bookings").updateOne(
         {
           _id: new ObjectId(bookingId),
           customerId: new ObjectId(customerId),
+          stripeSessionId: session.id,
           paymentStatus: "unpaid",
+          status: "pending",
         },
         {
           $set: {
@@ -344,8 +384,6 @@ export const handleStripeWebhook = async (
       );
 
       // Save payment record idempotently.
-      // This runs even if the booking was already updated,
-      // allowing Stripe webhook retries to complete safely.
       await db.collection("payments").updateOne(
         {
           stripeSessionId: session.id,
