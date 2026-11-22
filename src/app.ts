@@ -2,6 +2,8 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import { connectDatabase } from "./config/database.js";
+
 import authRoutes from "./modules/auth/auth.routes.js";
 import usersRoutes from "./modules/users/users.routes.js";
 import equipmentRoutes from "./modules/equipment/equipment.routes.js";
@@ -43,14 +45,37 @@ app.get("/api/v1/health", (_req, res) => {
   });
 });
 
+// Ensure MongoDB is connected before handling API requests
+app.use(async (_req, res, next) => {
+  try {
+    await connectDatabase();
+    next();
+  } catch (error) {
+    console.error("Database connection failed:", error);
+
+    res.status(503).json({
+      success: false,
+      message: "Database connection failed.",
+    });
+  }
+});
+
 // Authentication routes
 app.use("/api/v1/auth", authRoutes);
+
 // User management routes
 app.use("/api/v1/users", usersRoutes);
 
+// Equipment routes
 app.use("/api/v1/equipment", equipmentRoutes);
+
+// Booking routes
 app.use("/api/v1/bookings", bookingRoutes);
+
+// Favorites routes
 app.use("/api/v1/favorites", favoritesRoutes);
+
+// Payment routes
 app.use("/api/v1/payments", paymentRoutes);
 
 export default app;

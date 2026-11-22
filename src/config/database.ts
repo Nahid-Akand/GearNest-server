@@ -14,56 +14,46 @@ export const connectDatabase = async (): Promise<Db> => {
     return connectionPromise;
   }
 
-  connectionPromise = (async () => {
-    try {
-      const mongoUri = process.env.MONGODB_URI;
-      const dbName = process.env.DB_NAME || "gearnest";
+  connectionPromise = (async (): Promise<Db> => {
+    const mongoUri = process.env.MONGODB_URI;
+    const dbName = process.env.DB_NAME || "gearnest";
 
-      if (!mongoUri) {
-        throw new Error("MONGODB_URI is missing");
-      }
-
-      if (!client) {
-        client = new MongoClient(mongoUri);
-      }
-
-      await client.connect();
-
-      const db = client.db(dbName);
-
-      await db.command({ ping: 1 });
-
-      await db.collection("payments").createIndex(
-        { stripeSessionId: 1 },
-        {
-          unique: true,
-          partialFilterExpression: {
-            stripeSessionId: { $type: "string" },
-          },
-        }
-      );
-
-      database = db;
-
-      console.log(`MongoDB connected successfully: ${dbName}`);
-
-      return db;
-    } catch (error) {
-      console.error("MongoDB connection failed:", error);
-
-      if (client) {
-        await client.close().catch(() => {});
-        client = null;
-      }
-
-      database = null;
-      throw error;
-    } finally {
-      connectionPromise = null;
+    if (!mongoUri) {
+      throw new Error("MONGODB_URI is missing from environment variables");
     }
+
+    const mongoClient = new MongoClient(mongoUri);
+
+    await mongoClient.connect();
+
+    const db = mongoClient.db(dbName);
+
+    await db.command({ ping: 1 });
+
+    await db.collection("payments").createIndex(
+      { stripeSessionId: 1 },
+      { unique: true }
+    );
+
+    client = mongoClient;
+    database = db;
+
+    console.log(`MongoDB connected successfully: ${dbName}`);
+
+    return db;
   })();
 
-  return connectionPromise;
+  try {
+    return await connectionPromise;
+  } catch (error) {
+    connectionPromise = null;
+    client = null;
+    database = null;
+
+    console.error("MongoDB connection failed:", error);
+
+    throw error;
+  }
 };
 
 export const getDatabase = (): Db => {
